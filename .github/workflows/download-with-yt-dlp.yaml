@@ -1,4 +1,4 @@
-name: Download with yt-dlp or axel & Save to Repo
+name: Download with yt-dlp or wget & Save to Repo
 
 on:
   push:
@@ -20,10 +20,10 @@ jobs:
       - name: Setup yt-dlp
         uses: AnimMouse/setup-yt-dlp@v3
           
-      - name: Setup axel
+      - name: Setup wget
         run: |
           sudo apt-get update
-          sudo apt-get install -y axel
+          sudo apt-get install -y wget
 
       - name: Setup YouTube Cookies (only for yt-dlp)
         run: |
@@ -52,8 +52,8 @@ jobs:
             echo "🎬 Detected **video** tag - Using yt-dlp"
             DOWNLOAD_METHOD="yt-dlp"
           elif echo "$MSG" | grep -qi "\*\*file\*\*"; then
-            echo "📁 Detected **file** tag - Using axel"
-            DOWNLOAD_METHOD="axel"
+            echo "📁 Detected **file** tag - Using wget"
+            DOWNLOAD_METHOD="wget"
           else
             echo "⚠️ No specific tag found (**video** or **file**), defaulting to yt-dlp"
             DOWNLOAD_METHOD="yt-dlp"
@@ -113,20 +113,16 @@ jobs:
             echo "🚀 Running yt-dlp..."
             eval "$YT_CMD \"$URL\""
 
-          elif [ "$DOWNLOAD_METHOD" = "axel" ]; then
-            # axel configuration
-            CONNECTIONS="4"
+          elif [ "$DOWNLOAD_METHOD" = "wget" ]; then
+            # wget configuration (better for Hugging Face and similar sites)
             TIMEOUT="60"
+            USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             
-            # Parse axel specific options from commit message
-            if echo "$MSG" | grep -qi "connections: *[0-9]\+"; then
-              CONNECTIONS=$(echo "$MSG" | grep -oP "connections: *\K[0-9]+")
-            fi
-            
+            # Parse wget specific options from commit message
             if echo "$MSG" | grep -qi "timeout: *[0-9]\+"; then
               TIMEOUT=$(echo "$MSG" | grep -oP "timeout: *\K[0-9]+")
             fi
-
+            
             # Extract filename from URL or use default
             FILENAME=$(basename "$URL" | sed 's/?.*//')
             if [ -z "$FILENAME" ] || [ "$FILENAME" = "/" ]; then
@@ -136,18 +132,30 @@ jobs:
             # Clean filename
             FILENAME=$(echo "$FILENAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
             
-            echo "⚙️ axel Options: Connections=$CONNECTIONS | Timeout=${TIMEOUT}s"
+            echo "⚙️ wget Options: Timeout=${TIMEOUT}s"
             echo "📄 Output filename: $FILENAME"
             
-            # Download with axel
-            echo "🚀 Running axel..."
-            axel -n "$CONNECTIONS" -T "$TIMEOUT" -o "downloads/$FILENAME" "$URL"
+            # Download with wget (handles redirects and auth headers better)
+            echo "🚀 Running wget..."
+            wget \
+              --timeout="$TIMEOUT" \
+              --tries=3 \
+              --retry-connrefused \
+              --user-agent="$USER_AGENT" \
+              --header="Accept: */*" \
+              --header="Accept-Encoding: gzip, deflate, br" \
+              --header="Connection: keep-alive" \
+              --progress=bar:force \
+              --show-progress \
+              -O "downloads/$FILENAME" \
+              "$URL"
             
             # Check if download was successful
-            if [ $? -eq 0 ]; then
-              echo "✅ axel download completed successfully"
+            if [ $? -eq 0 ] && [ -f "downloads/$FILENAME" ]; then
+              FILE_SIZE=$(stat -c%s "downloads/$FILENAME" 2>/dev/null || stat -f%z "downloads/$FILENAME" 2>/dev/null)
+              echo "✅ wget download completed successfully ($(numfmt --to=iec-i --suffix=B $FILE_SIZE 2>/dev/null || echo "$FILE_SIZE bytes"))"
             else
-              echo "❌ axel download failed"
+              echo "❌ wget download failed"
               exit 1
             fi
           fi
@@ -160,10 +168,16 @@ jobs:
           
           LIMIT=$((90 * 1024 * 1024))  # 90MB
           
+          # Check if downloads directory exists and has files
+          if [ ! -d "downloads" ] || [ -z "$(ls -A downloads)" ]; then
+            echo "⚠️ No files found in downloads directory"
+            exit 0
+          fi
+          
           for FILE in downloads/*; do
             [ -f "$FILE" ] || continue
           
-            SIZE=$(stat -c%s "$FILE")
+            SIZE=$(stat -c%s "$FILE" 2>/dev/null || stat -f%z "$FILE" 2>/dev/null)
             BASENAME=$(basename "$FILE")
           
             # Remove extension
@@ -176,7 +190,7 @@ jobs:
               | sed 's/-\+/-/g' \
               | sed 's/^-//;s/-$//')
           
-            echo "📄 $BASENAME ($(numfmt --to=iec-i --suffix=B $SIZE))"
+            echo "📄 $BASENAME ($(numfmt --to=iec-i --suffix=B $SIZE 2>/dev/null || echo "$SIZE bytes"))"
           
             if [ "$SIZE" -gt "$LIMIT" ]; then
               echo "✂️ Splitting large file → Folder: $FOLDERNAME"
