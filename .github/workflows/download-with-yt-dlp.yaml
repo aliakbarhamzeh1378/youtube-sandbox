@@ -38,15 +38,28 @@ jobs:
           echo "$MSG"
           echo "----------------------------------------"
 
-          # Extract URL from commit message - FIXED for quotes
-          URL=$(echo "$MSG" | grep -oP 'https?://[^\s"\047<>]+' | head -n1 | sed 's/["\047]//g')
+          # Extract URL from commit message - IMPROVED with better cleaning
+          RAW_URL=$(echo "$MSG" | grep -oP 'https?://[^\s<>]+' | head -n1)
+          
+          # Clean the URL: remove quotes, percent encoding, and special characters
+          CLEAN_URL=$(echo "$RAW_URL" | \
+            sed 's/["\047]//g' | \
+            sed 's/%22//g' | \
+            sed 's/)$//' | \
+            sed 's/\.$//' | \
+            sed 's/,$//' | \
+            sed 's/\[.*\]//' | \
+            sed 's/{.*}//' | \
+            sed 's/[[:space:]]*$//')
+          
+          URL="$CLEAN_URL"
           
           if [ -z "$URL" ]; then
             echo "❌ No URL found in commit message"
             exit 1
           fi
 
-          echo "📥 URL: $URL"
+          echo "📥 Cleaned URL: $URL"
 
           # Determine download method based on tags in commit message
           if echo "$MSG" | grep -qi "\*\*video\*\*"; then
@@ -123,8 +136,8 @@ jobs:
               TIMEOUT=$(echo "$MSG" | grep -oP "timeout: *\K[0-9]+")
             fi
             
-            # Extract filename from URL - FIXED
-            FILENAME=$(basename "$URL" | sed 's/?.*//' | sed 's/["\047]//g')
+            # Extract filename from CLEAN URL
+            FILENAME=$(basename "$URL" | sed 's/?.*//' | sed 's/["\047]//g' | sed 's/%22//g')
             if [ -z "$FILENAME" ] || [ "$FILENAME" = "/" ]; then
               FILENAME="downloaded_file"
             fi
@@ -135,7 +148,7 @@ jobs:
             echo "⚙️ wget Options: Timeout=${TIMEOUT}s"
             echo "📄 Output filename: $FILENAME"
             
-            # Download with wget
+            # Download with wget using CLEAN URL
             echo "🚀 Running wget..."
             wget \
               --timeout="$TIMEOUT" \
@@ -151,7 +164,8 @@ jobs:
               "$URL"
             
             if [ $? -eq 0 ] && [ -f "downloads/$FILENAME" ]; then
-              echo "✅ Download completed successfully"
+              FILE_SIZE=$(stat -c%s "downloads/$FILENAME" 2>/dev/null || stat -f%z "downloads/$FILENAME" 2>/dev/null)
+              echo "✅ Download completed successfully ($(numfmt --to=iec-i --suffix=B $FILE_SIZE 2>/dev/null || echo "$FILE_SIZE bytes"))"
             else
               echo "❌ Download failed"
               exit 1
@@ -184,7 +198,7 @@ jobs:
               | sed 's/-\+/-/g' \
               | sed 's/^-//;s/-$//')
           
-            echo "📄 $BASENAME"
+            echo "📄 $BASENAME ($(numfmt --to=iec-i --suffix=B $SIZE 2>/dev/null || echo "$SIZE bytes"))"
           
             if [ "$SIZE" -gt "$LIMIT" ]; then
               echo "✂️ Splitting large file → Folder: $FOLDERNAME"
