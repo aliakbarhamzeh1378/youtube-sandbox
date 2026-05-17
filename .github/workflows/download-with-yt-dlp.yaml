@@ -38,8 +38,9 @@ jobs:
           echo "$MSG"
           echo "----------------------------------------"
 
-          # Extract URL from commit message
-          URL=$(echo "$MSG" | grep -oP '(https?://\S+)' | head -n1)
+          # Extract URL from commit message - FIXED for quotes
+          URL=$(echo "$MSG" | grep -oP 'https?://[^\s"\047<>]+' | head -n1 | sed 's/["\047]//g')
+          
           if [ -z "$URL" ]; then
             echo "❌ No URL found in commit message"
             exit 1
@@ -114,17 +115,16 @@ jobs:
             eval "$YT_CMD \"$URL\""
 
           elif [ "$DOWNLOAD_METHOD" = "wget" ]; then
-            # wget configuration (better for Hugging Face and similar sites)
+            # wget configuration
             TIMEOUT="60"
             USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             
-            # Parse wget specific options from commit message
             if echo "$MSG" | grep -qi "timeout: *[0-9]\+"; then
               TIMEOUT=$(echo "$MSG" | grep -oP "timeout: *\K[0-9]+")
             fi
             
-            # Extract filename from URL or use default
-            FILENAME=$(basename "$URL" | sed 's/?.*//')
+            # Extract filename from URL - FIXED
+            FILENAME=$(basename "$URL" | sed 's/?.*//' | sed 's/["\047]//g')
             if [ -z "$FILENAME" ] || [ "$FILENAME" = "/" ]; then
               FILENAME="downloaded_file"
             fi
@@ -135,7 +135,7 @@ jobs:
             echo "⚙️ wget Options: Timeout=${TIMEOUT}s"
             echo "📄 Output filename: $FILENAME"
             
-            # Download with wget (handles redirects and auth headers better)
+            # Download with wget
             echo "🚀 Running wget..."
             wget \
               --timeout="$TIMEOUT" \
@@ -150,12 +150,10 @@ jobs:
               -O "downloads/$FILENAME" \
               "$URL"
             
-            # Check if download was successful
             if [ $? -eq 0 ] && [ -f "downloads/$FILENAME" ]; then
-              FILE_SIZE=$(stat -c%s "downloads/$FILENAME" 2>/dev/null || stat -f%z "downloads/$FILENAME" 2>/dev/null)
-              echo "✅ wget download completed successfully ($(numfmt --to=iec-i --suffix=B $FILE_SIZE 2>/dev/null || echo "$FILE_SIZE bytes"))"
+              echo "✅ Download completed successfully"
             else
-              echo "❌ wget download failed"
+              echo "❌ Download failed"
               exit 1
             fi
           fi
@@ -166,9 +164,8 @@ jobs:
         run: |
           echo "🔧 Processing downloaded files for splitting..."
           
-          LIMIT=$((90 * 1024 * 1024))  # 90MB
+          LIMIT=$((90 * 1024 * 1024))
           
-          # Check if downloads directory exists and has files
           if [ ! -d "downloads" ] || [ -z "$(ls -A downloads)" ]; then
             echo "⚠️ No files found in downloads directory"
             exit 0
@@ -179,40 +176,25 @@ jobs:
           
             SIZE=$(stat -c%s "$FILE" 2>/dev/null || stat -f%z "$FILE" 2>/dev/null)
             BASENAME=$(basename "$FILE")
-          
-            # Remove extension
             NAME="${BASENAME%.*}"
           
-            # Convert to clean kebab-case
             FOLDERNAME=$(echo "$NAME" \
               | tr '[:upper:]' '[:lower:]' \
               | sed 's/[^a-z0-9]/-/g' \
               | sed 's/-\+/-/g' \
               | sed 's/^-//;s/-$//')
           
-            echo "📄 $BASENAME ($(numfmt --to=iec-i --suffix=B $SIZE 2>/dev/null || echo "$SIZE bytes"))"
+            echo "📄 $BASENAME"
           
             if [ "$SIZE" -gt "$LIMIT" ]; then
               echo "✂️ Splitting large file → Folder: $FOLDERNAME"
-          
-              # Create destination folder
               mkdir -p "downloads/$FOLDERNAME"
-          
-              # Move original file into folder
               mv "$FILE" "downloads/$FOLDERNAME/$BASENAME"
-          
-              # Enter folder
               cd "downloads/$FOLDERNAME" || exit 1
-          
-              # Create multipart zip INSIDE the folder
               zip -s 90m "${FOLDERNAME}.zip" "$BASENAME" -q
-          
-              # Remove original file after successful zip
               rm -f "$BASENAME"
-          
               cd ../..
-          
-              echo "✅ Multipart zip created in downloads/$FOLDERNAME/"
+              echo "✅ Multipart zip created"
             else
               echo "✅ File under 90MB → kept as single file"
             fi
@@ -227,5 +209,4 @@ jobs:
           git config user.email "github-actions@github.com"
           git add downloads/
           git commit -m "Add downloaded files from commit [skip ci]" || echo "Nothing to commit"
-          echo "🚀 Pushing to branch: $BRANCH"
           git push origin HEAD:$BRANCH
