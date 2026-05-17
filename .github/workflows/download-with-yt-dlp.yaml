@@ -1,4 +1,4 @@
-name: Download with yt-dlp & Save to Repo
+name: Download with yt-dlp or axel & Save to Repo
 
 on:
   push:
@@ -20,7 +20,12 @@ jobs:
       - name: Setup yt-dlp
         uses: AnimMouse/setup-yt-dlp@v3
           
-      - name: Setup YouTube Cookies
+      - name: Setup axel
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y axel
+
+      - name: Setup YouTube Cookies (only for yt-dlp)
         run: |
           mkdir -p ~/.cache/yt-dlp/youtube
           echo "${{ secrets.YOUTUBE_COOKIES }}" > ~/.cache/yt-dlp/youtube/cookies.txt
@@ -33,6 +38,7 @@ jobs:
           echo "$MSG"
           echo "----------------------------------------"
 
+          # Extract URL from commit message
           URL=$(echo "$MSG" | grep -oP '(https?://\S+)' | head -n1)
           if [ -z "$URL" ]; then
             echo "❌ No URL found in commit message"
@@ -41,114 +47,164 @@ jobs:
 
           echo "📥 URL: $URL"
 
-          # Default options (same as before)
-          QUALITY="best"
-          PLAYLIST="--no-playlist"
-          AUDIO_ONLY="false"
-          SUBTITLES="false"
-          SPONSORBLOCK="true"
-
-          if echo "$MSG" | grep -qi "quality: *1080"; then QUALITY="1080"; fi
-          if echo "$MSG" | grep -qi "quality: *720";  then QUALITY="720"; fi
-          if echo "$MSG" | grep -qi "quality: *480";  then QUALITY="480"; fi
-
-          if echo "$MSG" | grep -qi "playlist: *true";      then PLAYLIST="--yes-playlist"; fi
-          if echo "$MSG" | grep -qi "audio-only: *true";    then AUDIO_ONLY="true"; fi
-          if echo "$MSG" | grep -qi "subtitles: *true";     then SUBTITLES="true"; fi
-          if echo "$MSG" | grep -qi "sponsorblock: *false"; then SPONSORBLOCK="false"; fi
+          # Determine download method based on tags in commit message
+          if echo "$MSG" | grep -qi "\*\*video\*\*"; then
+            echo "🎬 Detected **video** tag - Using yt-dlp"
+            DOWNLOAD_METHOD="yt-dlp"
+          elif echo "$MSG" | grep -qi "\*\*file\*\*"; then
+            echo "📁 Detected **file** tag - Using axel"
+            DOWNLOAD_METHOD="axel"
+          else
+            echo "⚠️ No specific tag found (**video** or **file**), defaulting to yt-dlp"
+            DOWNLOAD_METHOD="yt-dlp"
+          fi
 
           mkdir -p downloads
 
-          echo "⚙️ Options: Quality=$QUALITY | Playlist=${PLAYLIST/--no-playlist/Disabled} | Audio=$AUDIO_ONLY"
+          if [ "$DOWNLOAD_METHOD" = "yt-dlp" ]; then
+            # yt-dlp configuration
+            QUALITY="best"
+            PLAYLIST="--no-playlist"
+            AUDIO_ONLY="false"
+            SUBTITLES="false"
+            SPONSORBLOCK="true"
 
-          YT_CMD="yt-dlp \
-            --concurrent-fragments 8 \
-            --retries 10 \
-            --fragment-retries 10 \
-            --cookies ~/.cache/yt-dlp/youtube/cookies.txt"
+            if echo "$MSG" | grep -qi "quality: *1080"; then QUALITY="1080"; fi
+            if echo "$MSG" | grep -qi "quality: *720";  then QUALITY="720"; fi
+            if echo "$MSG" | grep -qi "quality: *480";  then QUALITY="480"; fi
 
-          if [ "$AUDIO_ONLY" = "true" ]; then
-            YT_CMD="$YT_CMD -x --audio-format mp3 --audio-quality 0"
-          else
-            case $QUALITY in
-              1080) YT_CMD="$YT_CMD -f 'bestvideo[height<=1080]+bestaudio/best[height<=1080]'" ;;
-              720)  YT_CMD="$YT_CMD -f 'bestvideo[height<=720]+bestaudio/best[height<=720]'" ;;
-              480)  YT_CMD="$YT_CMD -f 'bestvideo[height<=480]+bestaudio/best[height<=480]'" ;;
-              *)    YT_CMD="$YT_CMD -f 'bestvideo+bestaudio/best'" ;;
-            esac
-            YT_CMD="$YT_CMD --merge-output-format mp4"
+            if echo "$MSG" | grep -qi "playlist: *true";      then PLAYLIST="--yes-playlist"; fi
+            if echo "$MSG" | grep -qi "audio-only: *true";    then AUDIO_ONLY="true"; fi
+            if echo "$MSG" | grep -qi "subtitles: *true";     then SUBTITLES="true"; fi
+            if echo "$MSG" | grep -qi "sponsorblock: *false"; then SPONSORBLOCK="false"; fi
+
+            echo "⚙️ yt-dlp Options: Quality=$QUALITY | Playlist=${PLAYLIST/--no-playlist/Disabled} | Audio=$AUDIO_ONLY"
+
+            YT_CMD="yt-dlp \
+              --concurrent-fragments 8 \
+              --retries 10 \
+              --fragment-retries 10 \
+              --cookies ~/.cache/yt-dlp/youtube/cookies.txt"
+
+            if [ "$AUDIO_ONLY" = "true" ]; then
+              YT_CMD="$YT_CMD -x --audio-format mp3 --audio-quality 0"
+            else
+              case $QUALITY in
+                1080) YT_CMD="$YT_CMD -f 'bestvideo[height<=1080]+bestaudio/best[height<=1080]'" ;;
+                720)  YT_CMD="$YT_CMD -f 'bestvideo[height<=720]+bestaudio/best[height<=720]'" ;;
+                480)  YT_CMD="$YT_CMD -f 'bestvideo[height<=480]+bestaudio/best[height<=480]'" ;;
+                *)    YT_CMD="$YT_CMD -f 'bestvideo+bestaudio/best'" ;;
+              esac
+              YT_CMD="$YT_CMD --merge-output-format mp4"
+            fi
+
+            if [ "$PLAYLIST" = "--yes-playlist" ]; then
+              YT_CMD="$YT_CMD --yes-playlist"
+            else
+              YT_CMD="$YT_CMD --no-playlist"
+            fi
+
+            [ "$SUBTITLES" = "true" ] && YT_CMD="$YT_CMD --write-auto-sub --embed-subs"
+            [ "$SPONSORBLOCK" = "true" ] && YT_CMD="$YT_CMD --sponsorblock-remove all"
+
+            YT_CMD="$YT_CMD --embed-metadata --embed-thumbnail --embed-chapters --restrict-filenames"
+            YT_CMD="$YT_CMD --output 'downloads/%(title)s [%(id)s].%(ext)s'"
+
+            echo "🚀 Running yt-dlp..."
+            eval "$YT_CMD \"$URL\""
+
+          elif [ "$DOWNLOAD_METHOD" = "axel" ]; then
+            # axel configuration
+            CONNECTIONS="4"
+            TIMEOUT="60"
+            
+            # Parse axel specific options from commit message
+            if echo "$MSG" | grep -qi "connections: *[0-9]\+"; then
+              CONNECTIONS=$(echo "$MSG" | grep -oP "connections: *\K[0-9]+")
+            fi
+            
+            if echo "$MSG" | grep -qi "timeout: *[0-9]\+"; then
+              TIMEOUT=$(echo "$MSG" | grep -oP "timeout: *\K[0-9]+")
+            fi
+
+            # Extract filename from URL or use default
+            FILENAME=$(basename "$URL" | sed 's/?.*//')
+            if [ -z "$FILENAME" ] || [ "$FILENAME" = "/" ]; then
+              FILENAME="downloaded_file"
+            fi
+            
+            # Clean filename
+            FILENAME=$(echo "$FILENAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
+            
+            echo "⚙️ axel Options: Connections=$CONNECTIONS | Timeout=${TIMEOUT}s"
+            echo "📄 Output filename: $FILENAME"
+            
+            # Download with axel
+            echo "🚀 Running axel..."
+            axel -n "$CONNECTIONS" -T "$TIMEOUT" -o "downloads/$FILENAME" "$URL"
+            
+            # Check if download was successful
+            if [ $? -eq 0 ]; then
+              echo "✅ axel download completed successfully"
+            else
+              echo "❌ axel download failed"
+              exit 1
+            fi
           fi
-
-          if [ "$PLAYLIST" = "--yes-playlist" ]; then
-            YT_CMD="$YT_CMD --yes-playlist"
-          else
-            YT_CMD="$YT_CMD --no-playlist"
-          fi
-
-         
-          [ "$SUBTITLES" = "true" ] && YT_CMD="$YT_CMD --write-auto-sub --embed-subs"
-          [ "$SPONSORBLOCK" = "true" ] && YT_CMD="$YT_CMD --sponsorblock-remove all"
-
-          YT_CMD="$YT_CMD --embed-metadata --embed-thumbnail --embed-chapters --restrict-filenames"
-          YT_CMD="$YT_CMD --output 'downloads/%(title)s [%(id)s].%(ext)s'"
-
-          echo "🚀 Running yt-dlp..."
-          eval "$YT_CMD \"$URL\""
 
           echo "✅ Download finished"
-          
+
       - name: Split large files into 90MB chunks
         run: |
           echo "🔧 Processing downloaded files for splitting..."
-      
+          
           LIMIT=$((90 * 1024 * 1024))  # 90MB
-      
+          
           for FILE in downloads/*; do
             [ -f "$FILE" ] || continue
-      
+          
             SIZE=$(stat -c%s "$FILE")
             BASENAME=$(basename "$FILE")
-      
+          
             # Remove extension
             NAME="${BASENAME%.*}"
-      
+          
             # Convert to clean kebab-case
             FOLDERNAME=$(echo "$NAME" \
               | tr '[:upper:]' '[:lower:]' \
               | sed 's/[^a-z0-9]/-/g' \
               | sed 's/-\+/-/g' \
               | sed 's/^-//;s/-$//')
-      
+          
             echo "📄 $BASENAME ($(numfmt --to=iec-i --suffix=B $SIZE))"
-      
+          
             if [ "$SIZE" -gt "$LIMIT" ]; then
               echo "✂️ Splitting large file → Folder: $FOLDERNAME"
-      
+          
               # Create destination folder
               mkdir -p "downloads/$FOLDERNAME"
-      
+          
               # Move original file into folder
               mv "$FILE" "downloads/$FOLDERNAME/$BASENAME"
-      
+          
               # Enter folder
               cd "downloads/$FOLDERNAME" || exit 1
-      
+          
               # Create multipart zip INSIDE the folder
               zip -s 90m "${FOLDERNAME}.zip" "$BASENAME" -q
-      
+          
               # Remove original file after successful zip
               rm -f "$BASENAME"
-      
+          
               cd ../..
-      
+          
               echo "✅ Multipart zip created in downloads/$FOLDERNAME/"
             else
               echo "✅ File under 90MB → kept as single file"
             fi
           done
-      
+          
           echo "🎉 All files processed successfully"
-
 
       - name: Commit & Push
         run: |
